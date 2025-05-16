@@ -1,0 +1,107 @@
+file_name = 'TopMid_Slow5.wav';
+dir_path = 'data';
+full_path = fullfile(dir_path, file_name);
+[audio, fs] = audioread(full_path);
+if size(audio,2) > 1
+    audio = audio(:, 1);  % Convert to mono if stereo
+end
+audio = squeeze(audio);
+t = (0:length(audio)-1) / fs;
+
+% figure()
+% plot(t, audio)
+
+
+
+%% Segmentation + feature check
+segment_duration = 0.15; % s
+freq_res = fs / 4096;  
+freq_range = [0.2, 10000];  % 0.2 Hz to 10 kHz
+
+% peak finder
+MinPeakHeight = 0.05;
+
+[peak_values, peak_indices] = findpeaks(audio, 'MinPeakHeight',MinPeakHeight, 'MinPeakDistance', 5000);
+segments = zeros(length(peak_indices), segment_duration*fs*2+1);
+
+n_seg = length(peak_indices);
+
+figure
+for i = 1:n_seg
+    subplot(n_seg, 3, i*3-2)
+    seg = audio(peak_indices(i)-segment_duration*fs:peak_indices(i)+segment_duration*fs);
+    segments(i,:) = seg;
+    plot(seg)
+    subplot(n_seg, 3, i*3-1)
+    pspectrum(seg, fs, 'FrequencyResolution', freq_res)
+    xlim(freq_range/1000)
+    subplot(n_seg, 3, i*3)
+    plot_powerSpectrum(seg, fs, 1);
+end
+
+
+%% create dataset
+% init
+[Pxx, f] = pspectrum(segments(1,:), fs, 'FrequencyResolution', freq_res);
+freq_mask = f >= freq_range(1) & f <= freq_range(2);
+X = zeros(n_seg, sum(freq_mask));
+% retrieve all
+for i = 1:n_seg
+    [Pxx, f] = pspectrum(segments(i,:), fs, 'FrequencyResolution', freq_res);
+    X(i,:) = Pxx(freq_mask);
+end
+
+% 
+X = log10(X + eps);  
+
+% get label
+[~, name_only, ~] = fileparts(file_name);
+label_name = extractBefore(name_only, '_');  
+y = repmat({label_name}, n_seg, 1);  
+
+% check
+fprintf("Feature matrix size: %d samples × %d freq bins\n", size(X,1), size(X,2));
+disp("Example label:")
+disp(y{1})
+
+%% create all dataset
+dir_path = 'data';
+file_list = dir(fullfile(dir_path, '*.wav'));
+X_all = [];
+y_all = {};
+
+for file = file_list'
+    file_name = file.name;
+    full_path = fullfile(dir_path, file_name);
+    [audio, fs] = audioread(full_path);
+    if size(audio, 2) > 1
+        audio = audio(:,1);  % convert to mono
+    end
+
+    % 
+    [peak_values, peak_indices] = findpeaks(audio, 'MinPeakHeight', MinPeakHeight, 'MinPeakDistance', 5000);
+    n_seg = length(peak_indices);
+    segments = zeros(n_seg, segment_duration*fs*2 + 1);
+
+    for i = 1:n_seg
+        idx_start = peak_indices(i) - segment_duration*fs;
+        idx_end = peak_indices(i) + segment_duration*fs;
+        if idx_start < 1 || idx_end > length(audio)
+            continue;  % 
+        end
+        seg = audio(idx_start:idx_end);
+        [Pxx, f] = pspectrum(seg, fs, 'FrequencyResolution', fs/512);
+        freq_mask = f >= freq_range(1) & f <= freq_range(2);
+        spectrum_feature = Pxx(freq_mask)';
+        X_all = [X_all; log10(spectrum_feature + eps)];
+    end
+
+    % labeling
+    [~, name_only, ~] = fileparts(file_name);
+    label = extractBefore(name_only, '_');  
+    y_labels = repmat({label}, size(X_all,1) - length(y_all), 1);
+    y_all = [y_all; y_labels];
+end
+
+tabulate(y_all)
+save('ML_output/Xy_data.mat', 'X_all', 'y_all');
